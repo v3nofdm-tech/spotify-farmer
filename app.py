@@ -1,23 +1,25 @@
 """
 🎵 Spotify Farmer — app.py
 Architecture :
-  1. Flask server → OAuth one-time setup (visite l'URL une fois)
-  2. librespot subprocess → apparaît comme "V3no Player" dans Spotify Connect
-  3. Watchdog loop → vérifie que ça joue, relance si ça s'arrête
+  1. librespot (Python) → device Spotify Connect "V3no Player"
+  2. Flask → OAuth one-time setup
+  3. Watchdog → joue l'artiste en shuffle 24/7
 """
 import os
 import sys
 import time
 import logging
-import asyncio
 import threading
-import subprocess
-import json
+import random
 from pathlib import Path
 
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
-from flask import Flask, request, redirect
+from flask import Flask, request
+
+# librespot Python
+from librespot.core import Session
+from librespot.audio.decoders import AudioQuality
 
 # ─── LOGGING ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -28,17 +30,21 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-CLIENT_ID       = os.getenv("SPOTIFY_CLIENT_ID",     "a93f99b0286d4da6bb67021e1774489c")
-CLIENT_SECRET   = os.getenv("SPOTIFY_CLIENT_SECRET", "e849fd278b2f46d9822ec6cebf70a0c9")
-SPOTIFY_USER    = os.getenv("SPOTIFY_USERNAME",      "V3no")
-SPOTIFY_PASS    = os.getenv("SPOTIFY_PASSWORD",      "")
-DEVICE_NAME     = os.getenv("SPOTIFY_DEVICE_NAME",   "V3no Player")
-ARTIST_ID       = os.getenv("SPOTIFY_ARTIST_ID",     "4tj9yRpZ3I6ymn8QnMLJhw")
-RAILWAY_DOMAIN  = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # auto-injecté par Railway
-PORT            = int(os.getenv("PORT", "8888"))
+CLIENT_ID      = os.getenv("SPOTIFY_CLIENT_ID",     "a93f99b0286d4da6bb67021e1774489c")
+CLIENT_SECRET  = os.getenv("SPOTIFY_CLIENT_SECRET", "e849fd278b2f46d9822ec6cebf70a0c9")
+SPOTIFY_USER   = os.getenv("SPOTIFY_USERNAME",      "v3kee2@proton.me")
+SPOTIFY_PASS   = os.getenv("SPOTIFY_PASSWORD",      "")
+DEVICE_NAME    = os.getenv("SPOTIFY_DEVICE_NAME",   "V3no Player")
+ARTIST_ID      = os.getenv("SPOTIFY_ARTIST_ID",     "4tj9yRpZ3I6ymn8QnMLJhw")
+RAILWAY_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+PORT           = int(os.getenv("PORT", "8888"))
 
-REDIRECT_URI    = f"https://{RAILWAY_DOMAIN}/callback" if RAILWAY_DOMAIN else f"http://localhost:{PORT}/callback"
-TOKEN_CACHE     = "/tmp/.spotify_token_cache"
+REDIRECT_URI = (
+    f"https://{RAILWAY_DOMAIN}/callback"
+    if RAILWAY_DOMAIN
+    else f"http://localhost:{PORT}/callback"
+)
+TOKEN_CACHE = "/tmp/.spotify_token_cache"
 
 SCOPES = " ".join([
     "user-read-playback-state",
@@ -63,15 +69,15 @@ _setup_done = threading.Event()
 
 @app.route("/")
 def index():
-    token_info = oauth.get_cached_token()
-    if token_info:
-        return "<h2>✅ Spotify Farmer actif ! Retourne sur Telegram.</h2>"
+    if oauth.get_cached_token():
+        return "<h2>✅ Spotify Farmer actif !</h2><p>Ferme cette page.</p>"
     auth_url = oauth.get_authorize_url()
     return (
-        f"<h2>🎵 Setup Spotify Farmer</h2>"
-        f"<p>Clique le bouton ci-dessous pour autoriser :</p>"
-        f'<a href="{auth_url}" style="font-size:20px;padding:12px 24px;background:#1DB954;'
-        f'color:white;text-decoration:none;border-radius:25px;">✅ Autoriser Spotify</a>'
+        "<h2>🎵 Setup Spotify Farmer</h2>"
+        "<p>Clique pour autoriser :</p>"
+        f'<a href="{auth_url}" style="font-size:20px;padding:12px 24px;'
+        f'background:#1DB954;color:white;text-decoration:none;border-radius:25px;">'
+        f'✅ Autoriser Spotify</a>'
     )
 
 
@@ -79,111 +85,102 @@ def index():
 def callback():
     code = request.args.get("code")
     if not code:
-        return "❌ Erreur — pas de code reçu", 400
+        return "❌ Pas de code", 400
     token_info = oauth.get_access_token(code, as_dict=True)
     if token_info:
-        log.info("[Setup] ✅ Token Spotify obtenu et sauvegardé !")
+        log.info("[OAuth] ✅ Token obtenu !")
         _setup_done.set()
-        return "<h2>✅ Autorisé ! Le farmer démarre...</h2><p>Tu peux fermer cette page.</p>"
-    return "❌ Erreur lors de l'obtention du token", 400
+        return "<h2>✅ Autorisé ! Le farmer démarre.</h2>"
+    return "❌ Erreur token", 400
 
 
-# ─── LIBRESPOT ────────────────────────────────────────────────────────────────
+# ─── LIBRESPOT DEVICE ─────────────────────────────────────────────────────────
 
-def start_librespot() -> subprocess.Popen:
-    """Lance spotifyd en background — apparaît comme device Spotify."""
-    cmd = [
-        "spotifyd",
-        "--no-daemon",
-        "--username",    SPOTIFY_USER,
-        "--password",    SPOTIFY_PASS,
-        "--backend",     "pipe",
-        "--device-name", DEVICE_NAME,
-        "--bitrate",     "320",
-    ]
-    log.info(f"[spotifyd] 🎵 Démarrage du device '{DEVICE_NAME}'...")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    log.info(f"[spotifyd] ✅ Device actif (PID {proc.pid})")
-    return proc
+def start_librespot_device():
+    """
+    Crée un device Spotify Connect via librespot-python.
+    Tourne en thread séparé.
+    """
+    try:
+        log.info(f"[librespot] 🎵 Création du device '{DEVICE_NAME}'...")
+        conf = Session.Configuration.Builder() \
+            .set_store_credentials(False) \
+            .build()
+
+        session = Session.Builder(conf) \
+            .user_pass(SPOTIFY_USER, SPOTIFY_PASS) \
+            .create()
+
+        log.info(f"[librespot] ✅ Device '{DEVICE_NAME}' connecté !")
+
+        # Garde le device actif indéfiniment
+        while True:
+            time.sleep(10)
+
+    except Exception as e:
+        log.error(f"[librespot] ❌ Erreur device : {e}")
 
 
 # ─── WATCHDOG ─────────────────────────────────────────────────────────────────
 
-def get_spotify_client() -> spotipy.Spotify:
+def get_sp() -> spotipy.Spotify:
     token_info = oauth.get_cached_token()
     if not token_info:
-        raise RuntimeError("Pas de token — setup OAuth d'abord")
+        raise RuntimeError("Pas de token OAuth")
     if oauth.is_token_expired(token_info):
         token_info = oauth.refresh_access_token(token_info["refresh_token"])
     return spotipy.Spotify(auth=token_info["access_token"])
 
 
 def get_device_id(sp: spotipy.Spotify) -> str | None:
-    """Trouve le device_id de 'V3no Player'."""
-    devices = sp.devices()
-    for d in devices.get("devices", []):
+    for d in sp.devices().get("devices", []):
         if d["name"] == DEVICE_NAME:
             return d["id"]
     return None
 
 
 def get_artist_tracks(sp: spotipy.Spotify) -> list[str]:
-    """Récupère tous les URIs des tracks de l'artiste."""
     tracks = []
-    # Albums de l'artiste
-    albums = sp.artist_albums(f"spotify:artist:{ARTIST_ID}", album_type="album,single", limit=50)
+    albums = sp.artist_albums(
+        f"spotify:artist:{ARTIST_ID}",
+        album_type="album,single",
+        limit=50,
+    )
     for album in albums.get("items", []):
-        album_tracks = sp.album_tracks(album["id"], limit=50)
-        for t in album_tracks.get("items", []):
+        for t in sp.album_tracks(album["id"], limit=50).get("items", []):
             tracks.append(t["uri"])
-    log.info(f"[Watchdog] 📀 {len(tracks)} tracks trouvées pour l'artiste")
+    log.info(f"[Watchdog] 📀 {len(tracks)} tracks trouvées")
     return tracks
 
 
 def watchdog_loop():
-    """
-    Boucle principale :
-    - Toutes les 30s vérifie si ça joue sur V3no Player
-    - Si arrêté → relance la playlist de l'artiste en shuffle
-    """
-    import random
+    log.info("[Watchdog] ⌚ Attend token OAuth...")
+    _setup_done.wait()
+    log.info("[Watchdog] ✅ Démarrage watchdog !")
 
-    log.info("[Watchdog] ⌚ Démarrage watchdog — attend le token OAuth...")
-    _setup_done.wait()  # Attend que l'OAuth soit fait
-    log.info("[Watchdog] ✅ Token dispo — surveillance active !")
-
-    tracks      = []
-    device_id   = None
-    retry_count = 0
+    tracks    = []
+    device_id = None
+    retries   = 0
 
     while True:
         try:
-            sp = get_spotify_client()
+            sp = get_sp()
 
-            # Récupère les tracks au premier lancement ou si vide
             if not tracks:
                 tracks = get_artist_tracks(sp)
                 if not tracks:
-                    log.warning("[Watchdog] ⚠️ Aucune track trouvée — retry dans 60s")
                     time.sleep(60)
                     continue
 
-            # Trouve le device
             if not device_id:
                 device_id = get_device_id(sp)
                 if not device_id:
-                    log.warning(f"[Watchdog] 💤 Device '{DEVICE_NAME}' pas encore visible — retry dans 15s")
+                    log.warning(f"[Watchdog] Device '{DEVICE_NAME}' pas encore visible...")
                     time.sleep(15)
                     continue
                 log.info(f"[Watchdog] 🎯 Device trouvé : {device_id}")
 
-            # Vérifie l'état de lecture
-            playback = sp.current_playback()
-
+            playback   = sp.current_playback()
             is_playing = (
                 playback is not None
                 and playback.get("is_playing")
@@ -191,26 +188,22 @@ def watchdog_loop():
             )
 
             if not is_playing:
-                log.info("[Watchdog] ▶️ Pas en lecture — lancement shuffle artiste !")
                 shuffled = random.sample(tracks, min(len(tracks), 50))
-                sp.start_playback(
-                    device_id=device_id,
-                    uris=shuffled,
-                )
+                sp.start_playback(device_id=device_id, uris=shuffled)
                 sp.shuffle(True, device_id=device_id)
                 sp.repeat("context", device_id=device_id)
-                retry_count = 0
-                log.info("[Watchdog] 🎵 Lecture lancée en shuffle !")
+                log.info("[Watchdog] ▶️ Lecture lancée en shuffle !")
+                retries = 0
             else:
-                current = playback.get("item", {}).get("name", "?")
-                log.debug(f"[Watchdog] ✅ En lecture : {current}")
+                name = playback.get("item", {}).get("name", "?")
+                log.debug(f"[Watchdog] ✅ En cours : {name}")
 
         except Exception as e:
-            retry_count += 1
-            log.error(f"[Watchdog] ❌ Erreur (#{retry_count}): {e}")
-            if retry_count > 5:
-                device_id = None  # Force re-détection du device
-                retry_count = 0
+            retries += 1
+            log.error(f"[Watchdog] ❌ Erreur #{retries} : {e}")
+            if retries > 5:
+                device_id = None
+                retries   = 0
 
         time.sleep(30)
 
@@ -219,27 +212,28 @@ def watchdog_loop():
 
 def main():
     log.info("=" * 55)
-    log.info("🎵 SPOTIFY FARMER — Starting up...")
-    log.info(f"   Device     : {DEVICE_NAME}")
-    log.info(f"   Artist ID  : {ARTIST_ID}")
-    log.info(f"   Redirect   : {REDIRECT_URI}")
+    log.info("🎵 SPOTIFY FARMER v2 — Starting up...")
+    log.info(f"   Device  : {DEVICE_NAME}")
+    log.info(f"   Artist  : {ARTIST_ID}")
+    log.info(f"   URL     : https://{RAILWAY_DOMAIN or f'localhost:{PORT}'}")
     log.info("=" * 55)
 
-    # Check si token déjà en cache (redeploy → pas besoin de re-autoriser)
+    # Token déjà en cache ?
     if oauth.get_cached_token():
-        log.info("[Main] ✅ Token en cache — setup déjà fait !")
+        log.info("[Main] ✅ Token en cache — pas besoin de re-autoriser")
         _setup_done.set()
     else:
-        log.info(f"[Main] 🔐 Setup OAuth requis → visite : https://{RAILWAY_DOMAIN or f'localhost:{PORT}'}")
+        log.info(f"[Main] 🔐 Visite : https://{RAILWAY_DOMAIN or f'localhost:{PORT}'}")
 
-    # Lance librespot en background
-    librespot_proc = start_librespot()
+    # Lance librespot device en thread
+    t_device = threading.Thread(target=start_librespot_device, daemon=True)
+    t_device.start()
 
-    # Lance le watchdog dans un thread séparé
-    watchdog_thread = threading.Thread(target=watchdog_loop, daemon=True)
-    watchdog_thread.start()
+    # Lance watchdog en thread
+    t_watchdog = threading.Thread(target=watchdog_loop, daemon=True)
+    t_watchdog.start()
 
-    # Flask en foreground (pour OAuth + healthcheck Railway)
+    # Flask en foreground
     app.run(host="0.0.0.0", port=PORT, debug=False)
 
 
