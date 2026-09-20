@@ -99,26 +99,33 @@ def callback():
 def start_librespot_device():
     """
     Crée un device Spotify Connect via librespot-python.
-    Tourne en thread séparé.
+    Retry automatique toutes les 30s si ça fail.
     """
-    try:
-        log.info(f"[librespot] 🎵 Création du device '{DEVICE_NAME}'...")
-        conf = Session.Configuration.Builder() \
-            .set_store_credentials(False) \
-            .build()
+    retry = 0
+    while True:
+        try:
+            log.info(f"[librespot] 🎵 Connexion à Spotify (tentative {retry + 1})...")
+            conf = (
+                Session.Configuration.Builder()
+                .set_store_credentials(False)
+                .build()
+            )
+            session = (
+                Session.Builder(conf)
+                .user_pass(SPOTIFY_USER, SPOTIFY_PASS)
+                .create()
+            )
+            log.info(f"[librespot] ✅ Device '{DEVICE_NAME}' connecté !")
+            retry = 0
+            # Garde la session active
+            while True:
+                time.sleep(30)
 
-        session = Session.Builder(conf) \
-            .user_pass(SPOTIFY_USER, SPOTIFY_PASS) \
-            .create()
-
-        log.info(f"[librespot] ✅ Device '{DEVICE_NAME}' connecté !")
-
-        # Garde le device actif indéfiniment
-        while True:
-            time.sleep(10)
-
-    except Exception as e:
-        log.error(f"[librespot] ❌ Erreur device : {e}")
+        except Exception as e:
+            retry += 1
+            wait = min(retry * 15, 120)
+            log.warning(f"[librespot] ⚠️ Erreur ({e}) — retry dans {wait}s")
+            time.sleep(wait)
 
 
 # ─── WATCHDOG ─────────────────────────────────────────────────────────────────
