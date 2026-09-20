@@ -91,23 +91,23 @@ def callback():
 # ─── LIBRESPOT ────────────────────────────────────────────────────────────────
 
 def start_librespot() -> subprocess.Popen:
-    """Lance librespot en background — apparaît comme device Spotify."""
+    """Lance spotifyd en background — apparaît comme device Spotify."""
     cmd = [
-        "librespot",
-        "--name",     DEVICE_NAME,
-        "--username", SPOTIFY_USER,
-        "--password", SPOTIFY_PASS,
-        "--backend",  "pipe",           # pas de sortie audio réelle
-        "--bitrate",  "320",            # qualité max pour le Wrapped
-        "--quiet",
+        "spotifyd",
+        "--no-daemon",
+        "--username",    SPOTIFY_USER,
+        "--password",    SPOTIFY_PASS,
+        "--backend",     "pipe",
+        "--device-name", DEVICE_NAME,
+        "--bitrate",     "320",
     ]
-    log.info(f"[librespot] 🎵 Démarrage du device '{DEVICE_NAME}'...")
+    log.info(f"[spotifyd] 🎵 Démarrage du device '{DEVICE_NAME}'...")
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
-    log.info(f"[librespot] ✅ Device actif (PID {proc.pid})")
+    log.info(f"[spotifyd] ✅ Device actif (PID {proc.pid})")
     return proc
 
 

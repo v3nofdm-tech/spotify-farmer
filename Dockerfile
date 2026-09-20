@@ -13,15 +13,14 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
-# ── librespot binary (client Spotify headless) ────────────────────────────────
-# Télécharge le binaire pré-compilé depuis GitHub releases
-ARG LIBRESPOT_VERSION=v0.6.0
+# ── spotifyd binary (Spotify daemon basé sur librespot, avec vrais binaires) ─
+ARG SPOTIFYD_VERSION=v0.3.5
 RUN curl -fsSL \
-    "https://github.com/librespot-org/librespot/releases/download/${LIBRESPOT_VERSION}/librespot-linux-x86_64.tar.gz" \
-    -o /tmp/librespot.tar.gz \
-    && tar -xzf /tmp/librespot.tar.gz -C /usr/local/bin/ \
-    && chmod +x /usr/local/bin/librespot \
-    && rm /tmp/librespot.tar.gz
+    "https://github.com/Spotifyd/spotifyd/releases/download/${SPOTIFYD_VERSION}/spotifyd-linux-x86_64-slim.tar.gz" \
+    -o /tmp/spotifyd.tar.gz \
+    && tar -xzf /tmp/spotifyd.tar.gz -C /usr/local/bin/ \
+    && chmod +x /usr/local/bin/spotifyd \
+    && rm /tmp/spotifyd.tar.gz
 
 WORKDIR /app
 
