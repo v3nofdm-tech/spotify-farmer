@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ── Étape 1 : Compilation de librespot (Rust) depuis la source ──
-FROM rust:1.76-slim-bookworm AS builder
+FROM rust:slim-bookworm AS builder
 RUN apt-get update && apt-get install -y pkg-config libasound2-dev build-essential
 # On compile la version master de GitHub pour avoir les derniers fix de login Spotify
 RUN cargo install --git https://github.com/librespot-org/librespot.git librespot
